@@ -1,4 +1,4 @@
-import { promises, readFileSync } from 'fs'
+import { promises, readFileSync, statSync } from 'fs'
 import LRUCache from 'next/dist/compiled/lru-cache'
 import path from 'path'
 import { PrerenderManifest } from '../../build'
@@ -31,6 +31,7 @@ export class IncrementalCache {
   prerenderManifest: PrerenderManifest
   cache: LRUCache<string, IncrementalCacheValue>
   locales?: string[]
+  useLruCache: boolean
 
   constructor({
     max,
@@ -39,6 +40,7 @@ export class IncrementalCache {
     pagesDir,
     flushToDisk,
     locales,
+    useLruCache,
   }: {
     dev: boolean
     max?: number
@@ -46,6 +48,7 @@ export class IncrementalCache {
     pagesDir: string
     flushToDisk?: boolean
     locales?: string[]
+    useLruCache?: boolean
   }) {
     this.incrementalOptions = {
       dev,
@@ -55,6 +58,7 @@ export class IncrementalCache {
         !dev && (typeof flushToDisk !== 'undefined' ? flushToDisk : true),
     }
     this.locales = locales
+    this.useLruCache = typeof useLruCache !== 'undefined' ? useLruCache : true
 
     if (dev) {
       this.prerenderManifest = {
@@ -86,24 +90,40 @@ export class IncrementalCache {
   }
 
   private calculateRevalidate(pathname: string): number | false {
-    pathname = toRoute(pathname)
-
     // in development we don't have a prerender-manifest
     // and default to always revalidating to allow easier debugging
     const curTime = new Date().getTime()
     if (this.incrementalOptions.dev) return curTime - 1000
 
     const { initialRevalidateSeconds } = this.prerenderManifest.routes[
-      pathname
+      toRoute(pathname)
     ] || {
       initialRevalidateSeconds: 1,
     }
     const revalidateAfter =
       typeof initialRevalidateSeconds === 'number'
-        ? initialRevalidateSeconds * 1000 + curTime
+        ? this.calculateRevalidateTime(pathname, initialRevalidateSeconds)
         : initialRevalidateSeconds
 
     return revalidateAfter
+  }
+
+  private calculateRevalidateTime(
+    pathname: string,
+    revalidateDelay: number
+  ): number {
+    // if cache is disabled, let's calculate the validation time
+    // based on when file was last modified
+    if (!this.useLruCache) {
+      try {
+        const { mtimeMs } = statSync(this.getSeedPath(pathname, 'html'))
+        return mtimeMs + revalidateDelay * 1000
+      } catch (e) {
+        // file doesn't exist yet
+      }
+    }
+
+    return revalidateDelay * 1000 + new Date().getTime()
   }
 
   getFallback(page: string): Promise<string> {
@@ -116,7 +136,11 @@ export class IncrementalCache {
     if (this.incrementalOptions.dev) return
     pathname = normalizePagePath(pathname)
 
-    let data = this.cache.get(pathname)
+    let data
+
+    if (this.useLruCache) {
+      data = this.cache.get(pathname)
+    }
 
     // let's check the disk for seed data
     if (!data) {
@@ -138,7 +162,9 @@ export class IncrementalCache {
           pageData,
           revalidateAfter: this.calculateRevalidate(pathname),
         }
-        this.cache.set(pathname, data)
+        if (this.useLruCache) {
+          this.cache.set(pathname, data)
+        }
       } catch (_) {
         // unable to get data from disk
       }
@@ -187,10 +213,13 @@ export class IncrementalCache {
     }
 
     pathname = normalizePagePath(pathname)
-    this.cache.set(pathname, {
-      ...data,
-      revalidateAfter: this.calculateRevalidate(pathname),
-    })
+
+    if (this.useLruCache) {
+      this.cache.set(pathname, {
+        ...data,
+        revalidateAfter: this.calculateRevalidate(pathname),
+      })
+    }
 
     // TODO: This option needs to cease to exist unless it stops mutating the
     // `next build` output's manifest.

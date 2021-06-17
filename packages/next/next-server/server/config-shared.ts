@@ -62,6 +62,7 @@ export type NextConfig = { [key: string]: any } & {
     disableOptimizedLoading?: boolean
     gzipSize?: boolean
     craCompat?: boolean
+    disableLruCache?: boolean
   }
 }
 
@@ -118,6 +119,7 @@ export const defaultConfig: NextConfig = {
     disableOptimizedLoading: false,
     gzipSize: true,
     craCompat: false,
+    disableLruCache: false,
   },
   webpack5:
     Number(process.env.NEXT_PRIVATE_TEST_WEBPACK4_MODE) > 0 ? false : undefined,
